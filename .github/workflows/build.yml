@@ -1,0 +1,176 @@
+name: Build
+
+# 触发方式：
+#   1. 手动运行（Actions 页面点 Run workflow）
+#   2. 推送 v 开头的 tag（如 v1.0.0）→ 构建 + 创建 GitHub Release
+#   3. 推送到 main → 构建并上传 artifact（不发布）
+on:
+  workflow_dispatch:
+  push:
+    # paths 过滤对 tag 推送不生效（GitHub 文档：Path filters are not evaluated for
+    # pushes of tags），所以打 tag 一定会触发，分支推送才走 paths 判断
+    tags:
+      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'build/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.npmrc'
+      - '.github/workflows/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- 引擎回归
+  test:
+    name: 引擎测试（Linux）
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 只跑不依赖 Electron 的脚本；UI 测试需要桌面环境，不在此处跑
+      - name: 核心库 + 引擎 + 格式兼容 + 外部工具
+        run: |
+          node scripts/smoke-test.mjs
+          node scripts/engine-test.mjs
+          node scripts/format-test.mjs
+          node scripts/external-tool-test.mjs
+
+  # ---------------------------------------------------------------- 打包
+  build:
+    name: 打包 ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 单个平台失败不影响其余平台产出
+      fail-fast: false
+      matrix:
+        include:
+          # ---- macOS ----
+          # runner-images 现在只提供 Intel / arm64 分开的 macOS 镜像；
+          # macos-13 已下线，macos-14 处于弃用期，用 15
+          - os: macos-15-intel # Intel 芯片，产出 x64
+            platform: mac
+            arch: x64
+          - os: macos-15 # Apple Silicon（M 系列），产出 arm64
+            platform: mac
+            arch: arm64
+
+          # ---- Windows ----
+          - os: windows-2025 # 显式固定版本：windows-latest 已指向 2025，避免将来自动迁移
+            platform: win
+            arch: x64
+          # ARM64 用 arm64 原生 runner，才能为 arm64 目标准备依赖与工具链
+          - os: windows-11-arm
+            platform: win
+            arch: arm64
+
+          # ---- Linux ----
+          # deb = Debian 系（Ubuntu / Debian / Mint / Kali…）
+          # rpm = Red Hat 系（RHEL / Fedora / CentOS Stream / Rocky / Alma / openSUSE…）
+          # AppImage 与发行版无关，作为通用免安装包一并产出
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+    env:
+      # 国内镜像在 GitHub runner 上反而更慢，这里改回官方地址
+      ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
+      # 无签名证书：跳过识别，避免 electron-builder 反复查找 identity
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # .npmrc 把 cache 指到 ~/.npm-omnizip-cache，需按该路径缓存
+      - name: 缓存 npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm-omnizip-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-npm-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-npm-
+
+      - name: 安装依赖
+        shell: bash
+        run: npm ci
+
+      # 打 .deb / .rpm / AppImage 需要 fpm 与打包工具链：
+      # app-builder 会自动下载 fpm，但 deb/rpm 都依赖系统里的 rpm / xz / squashfs 工具
+      - name: 安装 Linux 打包依赖
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm xz-utils libarchive-tools zstd
+
+      # artifactName 带 os/arch 后缀：两个 mac runner 产出的 dmg 原本同名，汇总时互相覆盖
+      # 注意架构要写成独立的 --x64 / --arm64，不能写成 `--mac x64`（会被当成 target 名）
+      - name: 打包
+        shell: bash
+        run: >
+          npx electron-builder
+          --${{ matrix.platform }} --${{ matrix.arch }}
+          -c.artifactName='${productName}-${version}-${os}-${arch}.${ext}'
+          --publish never
+
+      - name: 列出产物
+        shell: bash
+        run: ls -lh release/
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniZip-${{ matrix.platform }}-${{ matrix.arch }}
+          # 同一工作流内各 job 产物名必须唯一，因此按平台分类上传
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------- 发版
+  release:
+    name: 创建 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 下载全部产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 汇总文件
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.zip' \) -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

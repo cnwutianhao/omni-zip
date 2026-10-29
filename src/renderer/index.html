@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>OmniZip</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="platform.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="titlebar">
+        <div class="brand">
+          <span class="logo">▤</span>
+          <span class="brand-name">OmniZip</span>
+        </div>
+        <div class="global-stats">
+          <span class="stat"><b id="gs-count">0</b> 个任务</span>
+          <span class="stat active" id="gs-active-wrap" hidden>
+            <span class="dot"></span><b id="gs-active">0</b> 进行中
+          </span>
+          <button class="chip-btn" id="tools-btn" title="外部工具状态">
+            <svg viewBox="0 0 16 16" width="12" height="12">
+              <path d="M8 1.2 14.2 4.6v6.8L8 14.8 1.8 11.4V4.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+              <path d="M8 6.2v4M8 4.2v.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <span id="tools-label">检测中</span>
+          </button>
+          <button class="chip-btn primary" id="create-btn" title="新建压缩包">
+            <svg viewBox="0 0 16 16" width="12" height="12">
+              <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <span>新建</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="body">
+        <aside class="sidebar">
+          <nav class="filters">
+            <button class="filter active" data-filter="all"><span>全部</span><em id="c-all">0</em></button>
+            <button class="filter" data-filter="active"><span>进行中</span><em id="c-active">0</em></button>
+            <button class="filter" data-filter="done"><span>已完成</span><em id="c-done">0</em></button>
+            <button class="filter" data-filter="failed"><span>失败</span><em id="c-failed">0</em></button>
+          </nav>
+
+          <div class="side-foot">
+            <div class="side-label">默认输出到</div>
+            <button class="dir-btn" id="dir-btn" title="点击更改默认输出目录">
+              <span id="dir-text">—</span>
+            </button>
+            <div class="side-note" id="formats-note">—</div>
+          </div>
+        </aside>
+
+        <section class="content">
+          <div class="dropbar" id="dropbar">
+            <div class="dropzone" id="dropzone">
+              <svg class="drop-art" viewBox="0 0 64 64" width="40" height="40" aria-hidden="true">
+                <path d="M10 20.5h16l4.5 5h23.5v25.5H10z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
+                <path d="M32 26.5v13M26.5 34l5.5 5.5L37.5 34" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <div class="drop-text">
+                <b>拖入压缩包开始解压</b>
+                <span>ZIP · TAR · GZ · 7z · RAR（后两者需外部工具）</span>
+              </div>
+              <div class="drop-actions">
+                <button class="btn primary" id="pick-btn">选择压缩包</button>
+                <button class="btn ghost" id="pick-many-btn" title="一次选多个">批量选择</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="list" id="list">
+            <div class="empty" id="empty" hidden>
+              <svg class="empty-art" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true">
+                <rect x="12" y="9" width="40" height="46" rx="5" fill="none" stroke="currentColor" stroke-width="2.4"/>
+                <path d="M24 20h16M24 29h16M24 38h10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+              </svg>
+              <h2>还没有任务</h2>
+              <p>把压缩包拖到上方区域，或点「选择压缩包」</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="statusbar">
+        <span id="status-text">就绪</span>
+        <span class="spacer"></span>
+        <span id="status-hint"></span>
+      </footer>
+    </div>
+
+    <div class="toasts" id="toasts"></div>
+
+    <!-- 外部工具面板 -->
+    <div class="modal-mask" id="tools-modal" hidden>
+      <div class="modal">
+        <h3>外部工具</h3>
+        <p class="modal-hint">
+          内置引擎支持 <b>ZIP / TAR / GZIP</b>，无需任何依赖。<br />
+          7z、RAR、BZ2、XZ、ISO、WIM 等格式需要外部程序，检测到即自动启用。
+        </p>
+        <div class="tools-list" id="tools-list"></div>
+        <div class="modal-actions">
+          <button class="btn ghost" id="tools-refresh">重新检测</button>
+          <button class="btn primary" id="tools-close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新建压缩包 -->
+    <div class="modal-mask" id="create-modal" hidden>
+      <div class="modal wide">
+        <h3>新建压缩包</h3>
+
+        <div class="modal-row">
+          <label>源文件</label>
+          <button class="btn ghost small" id="create-pick">选择文件 / 文件夹</button>
+          <span class="muted" id="create-count">未选择</span>
+        </div>
+        <div class="src-list" id="create-src-list"></div>
+
+        <div class="modal-row">
+          <label>输出格式</label>
+          <select id="create-format">
+            <option value="zip">ZIP（兼容性最好）</option>
+            <option value="tar">TAR（无压缩，Unix 标准）</option>
+            <option value="gzip" data-ext="tar.gz">TAR.GZ（Unix 常用压缩）</option>
+            <option value="gzip" data-ext="gz">GZ（单文件）</option>
+            <option value="7z" id="opt-7z">7Z（需 7-Zip）</option>
+          </select>
+        </div>
+
+        <div class="modal-row">
+          <label>压缩级别</label>
+          <input type="range" id="create-level" min="0" max="9" step="1" value="6" />
+          <span class="unit" id="create-level-text">6</span>
+        </div>
+
+        <div class="modal-row">
+          <label>保存到</label>
+          <input type="text" id="create-path" readonly placeholder="点击选择…" />
+          <button class="btn ghost small" id="create-browse">浏览</button>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn ghost" id="create-cancel">取消</button>
+          <button class="btn primary" id="create-start">开始压缩</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 内容预览 -->
+    <div class="modal-mask" id="list-modal" hidden>
+      <div class="modal wide tall">
+        <h3 id="list-title">压缩包内容</h3>
+        <div class="list-meta" id="list-meta"></div>
+        <div class="entries" id="entries"></div>
+        <div class="modal-actions">
+          <button class="btn primary" id="list-close">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <template id="row-template">
+      <article class="row">
+        <div class="ring">
+          <svg viewBox="0 0 36 36"><circle class="ring-bg" cx="18" cy="18" r="15.5" /><circle class="ring-fg" cx="18" cy="18" r="15.5" /></svg>
+          <span class="ring-txt">0%</span>
+        </div>
+        <div class="row-main">
+          <div class="row-head">
+            <span class="row-name">—</span>
+            <span class="row-badge"></span>
+            <span class="row-kind"></span>
+          </div>
+          <div class="bar"><div class="bar-fill"></div></div>
+          <div class="row-meta">
+            <span class="m-size">—</span>
+            <span class="m-items"></span>
+            <span class="m-speed"></span>
+            <span class="m-state"></span>
+          </div>
+        </div>
+        <div class="row-actions">
+          <button class="icon-btn act-toggle" title="暂停 / 继续"></button>
+          <button class="icon-btn act-list" title="查看内容">
+            <svg viewBox="0 0 16 16" width="15" height="15">
+              <path d="M3 4h10M3 8h10M3 12h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="icon-btn act-open" title="打开输出位置">
+            <svg viewBox="0 0 16 16" width="15" height="15">
+              <path d="M1.5 3.5h4l1.2 1.5h7.8v7.5h-13z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="icon-btn act-more" title="更多">
+            <svg viewBox="0 0 16 16" width="15" height="15">
+              <circle cx="8" cy="3" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="13" r="1.4" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </article>
+    </template>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

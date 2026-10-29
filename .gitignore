@@ -1,0 +1,116 @@
+# ============================================================================
+# ⚠️ 这些路径必须提交，不要加到本文件（改规则前先看）
+# ============================================================================
+#   build/icon.png        electron-builder 的 buildResources，打包时必需
+#   build/icon.ico        Windows 图标源，打包时必需
+#   docs/screenshot.png   README 引用的界面截图
+#   package-lock.json     锁定依赖，CI 的 npm ci 依赖它
+#   .npmrc                npmmirror 镜像配置（国内网络必需，见 AGENTS.md）
+#
+# 注意：build/ 整个目录都要保留，不要写 `build/` 规则。
+#       它只是被 package.json 的 build.files 排除在 asar 之外，不代表不进 git。
+#
+# 另外：本文件不支持「行尾注释」，# 只能出现在行首或整行被注释，
+#       否则那串文字会被当成 glob 的一部分（例如 `foo/  # 注释` 会匹配不到 foo/）。
+# ============================================================================
+
+# ---------------------------------------------------------------- 依赖
+node_modules/
+.yarn/
+.pnp.*
+.node-gyp/
+# 本地 npm 缓存（.npmrc 已指向主目录，这里是兜底）
+.npm/
+
+# ---------------------------------------------------------------- 打包产物
+# electron-builder 输出目录（package.json: directories.output = release）
+release/
+dist/
+out/
+*.blockmap
+latest*.yml
+
+# 安装包：只匹配仓库根目录，避免误伤以后要提交的测试样例
+/*.dmg
+/*.AppImage
+/*.snap
+/*.flatpak
+/*.deb
+/*.rpm
+/*.msi
+/*.exe
+/*.pkg
+/*.zip
+/*.tar
+/*.tar.gz
+/*.tgz
+
+# ---------------------------------------------------------------- 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+logs/
+
+# ---------------------------------------------------------------- 系统文件
+.DS_Store
+# macOS 的 AppleDouble 文件（U 盘 / exFAT 上会产生，内容是资源分支）
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------- 编辑器 / IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+.fleet/
+.nova/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------- 环境变量与密钥
+# 这些一旦提交就可能泄露凭据；electron-builder 的签名配置尤其要注意
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+# Apple 开发者证书
+*.p12
+*.cer
+# Windows 代码签名证书
+*.pfx
+# iOS / macOS 描述文件
+*.mobileprovision
+*.provisionprofile
+electron-builder.env
+.electron-builder/
+
+# ---------------------------------------------------------------- 测试临时产物
+# 测试脚本统一用 os.tmpdir() 写文件，正常不会落到仓库；
+# 下面几条是防止改脚本后把临时目录放到项目内。
+.tmp-test/
+.tmp/
+# 压缩中途的临时包（成功后 rename 成正式文件；残留说明有任务失败了）
+*.omnizip-part
+
+# ---------------------------------------------------------------- 缓存与覆盖率
+.cache/
+.eslintcache
+.stylelintcache
+coverage/
+.nyc_output/
+
+# ---------------------------------------------------------------- 报告
+stability-report*.txt

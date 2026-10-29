@@ -1,0 +1,68 @@
+{
+  "name": "omnizip",
+  "productName": "OmniZip",
+  "version": "1.0.0",
+  "description": "全能解压缩工具：ZIP / TAR / GZIP / 7z 内置引擎，可选外挂 7-Zip",
+  "author": {
+    "name": "Tyhoo Wu",
+    "email": "cnwutianhao@gmail.com"
+  },
+  "homepage": "https://github.com/cnwutianhao/omni-zip",
+  "type": "module",
+  "main": "src/main/main.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node scripts/run-all.mjs",
+    "icon": "node scripts/gen-icon.mjs && node scripts/gen-icon-ico.mjs",
+    "dist": "electron-builder --mac --dir",
+    "dist-dmg": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:all": "electron-builder -mwl"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.wutianhao.omnizip",
+    "productName": "OmniZip",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "category": "Utility;Archiving",
+      "icon": "build/icon.png"
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}
