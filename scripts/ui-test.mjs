@@ -271,7 +271,44 @@ await sleep(200);
 const allRows = await evaluate("document.querySelectorAll('.row').length");
 check('切回全部有 2 行', allRows === 2, String(allRows));
 
-console.log('━━━ ⑩ 清理与异常检查 ━━━');
+console.log('━━━ ⑩ TAR.GZ 双层压缩 / 预览 / 解压与 setTaskDest IPC ━━━');
+const createdTgz = path.join(TMP, 'ui-created.tar.gz');
+const tgzCreateRes = await evaluate(
+  `window.zip.create(${JSON.stringify([path.join(TMP, 'src-for-zip')])}, { archivePath: ${JSON.stringify(createdTgz)}, formatId: 'tar.gz', level: 6 })`
+);
+check('IPC 创建 TAR.GZ 任务成功', tgzCreateRes?.ok === true, tgzCreateRes?.error || '');
+
+let tgzCreateTask = null;
+for (let i = 0; i < 100; i++) {
+  const st = await evaluate('window.zip.getState()');
+  tgzCreateTask = (st.tasks || []).find((t) => t.id === tgzCreateRes.id);
+  if (tgzCreateTask && (tgzCreateTask.status === 'done' || tgzCreateTask.status === 'error')) break;
+  await sleep(100);
+}
+check('TAR.GZ 压缩完成且标识为 TAR.GZ', tgzCreateTask?.status === 'done' && tgzCreateTask?.formatName === 'TAR.GZ', tgzCreateTask?.formatName);
+
+// 通过 UI 按钮打开 TAR.GZ 预览弹窗
+const tgzListRes = await evaluate(`window.zip.list(${JSON.stringify(createdTgz)})`);
+check('IPC list TAR.GZ 返回内层文件', tgzListRes?.ok === true && tgzListRes?.formatName === 'TAR.GZ' && tgzListRes.entries.some((e) => e.name.endsWith('f1.txt')));
+
+// 添加 TAR.GZ 解压任务并验证解出内层文件
+const tgzAddRes = await evaluate(`window.zip.addPaths(${JSON.stringify([createdTgz])})`);
+check('IPC 添加 TAR.GZ 解压任务成功', tgzAddRes?.ok === true);
+let tgzExtTask = null;
+for (let i = 0; i < 100; i++) {
+  const st = await evaluate('window.zip.getState()');
+  tgzExtTask = (st.tasks || []).find((t) => t.id === tgzAddRes.ids?.[0]);
+  if (tgzExtTask && (tgzExtTask.status === 'done' || tgzExtTask.status === 'error')) break;
+  await sleep(100);
+}
+check('TAR.GZ 解压完成', tgzExtTask?.status === 'done', tgzExtTask?.error || '');
+check('TAR.GZ 实际解出内层 f1.txt', fs.existsSync(path.join(tgzExtTask.destDir, 'src-for-zip/f1.txt')));
+
+// 验证 setTaskDest IPC
+const setDestRes = await evaluate(`window.zip.setTaskDest(${JSON.stringify(tgzExtTask.id)}, ${JSON.stringify(path.join(TMP, 'custom-dest'))})`);
+check('IPC setTaskDest 成功', setDestRes?.ok === true);
+
+console.log('━━━ ⑪ 清理与异常检查 ━━━');
 // 移除创建的任务（删掉生成的 zip）
 const stFinal = await evaluate('window.zip.getState()');
 for (const t of stFinal.tasks || []) {

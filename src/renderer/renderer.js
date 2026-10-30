@@ -7,7 +7,6 @@ const el = {
   empty: document.getElementById('empty'),
   dropzone: document.getElementById('dropzone'),
   pickBtn: document.getElementById('pick-btn'),
-  pickManyBtn: document.getElementById('pick-many-btn'),
   dirBtn: document.getElementById('dir-btn'),
   dirText: document.getElementById('dir-text'),
   formatsNote: document.getElementById('formats-note'),
@@ -320,7 +319,7 @@ function updateRow(entry, t) {
   refs.ringTxt.textContent = `${pct}%`;
 
   refs.name.textContent = t.name || '—';
-  refs.name.title = t.kind === 'extract' ? t.archivePath : t.archivePath;
+  refs.name.title = t.archivePath;
   refs.badge.textContent = BADGE_TEXT[st] || st;
   refs.kind.textContent = t.kind === 'extract' ? `解压 · ${t.formatName || '?'}` : `压缩 · ${t.formatName || '?'}`;
   refs.barFill.style.width = `${(t.done ? 1 : t.progress) * 100}%`;
@@ -507,9 +506,7 @@ function updateFormatsNote() {
   el.formatsNote.textContent = hasExternal
     ? `内置 ${builtin.length} · 外部 ${ext.length} 种格式`
     : `内置支持：${builtin.join(' / ')}`;
-  el.formatsNote.title = hasExternal
-    ? `内置：${builtin.join(', ')}\n需外部工具：${ext.join(', ')}`
-    : `内置：${builtin.join(', ')}\n需外部工具：${ext.join(', ')}`;
+  el.formatsNote.title = `内置：${builtin.join(', ')}\n需外部工具：${ext.join(', ')}`;
 }
 
 // ---------------------------------------------------------------- 事件绑定
@@ -524,8 +521,6 @@ el.pickBtn.addEventListener('click', async () => {
     toast(res.error || '添加失败', 'error', 4600);
   }
 });
-
-el.pickManyBtn.addEventListener('click', () => el.pickBtn.click());
 
 el.dirBtn.addEventListener('click', async () => {
   const picked = await api.chooseDir(state.outputDir);

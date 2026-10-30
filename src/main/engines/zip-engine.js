@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { crc32 } from '../lib/crc32.js';
+import { Readable } from 'node:stream';
+import { crc32, Crc32Stream } from '../lib/crc32.js';
 
 const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;
@@ -27,6 +28,19 @@ const SIG_EOCD64_LOCATOR = 0x07064b50;
 
 const METHOD_STORE = 0;
 const METHOD_DEFLATE = 8;
+
+/**
+ * 主动中止的专用错误。
+ * 用独立类型而不是字符串匹配，调用方才能可靠区分「用户暂停」与「真的出错」——
+ * 前者不该记进 task.error、也不该弹失败提示。
+ */
+export class AbortError extends Error {
+  constructor() {
+    super('aborted');
+    this.name = 'AbortError';
+    this.aborted = true;
+  }
+}
 
 /** EOCD 最小 22 字节，注释最长 65535 */
 const EOCD_MIN = 22;
@@ -109,10 +123,18 @@ export class ZipReader {
 
   async _open() {
     this.fd = await fsp.open(this.filePath, 'r');
-    const st = await this.fd.stat();
-    this.size = st.size;
-    await this._readEocd();
-    await this._readCentralDirectory();
+    try {
+      const st = await this.fd.stat();
+      this.size = st.size;
+      await this._readEocd();
+      await this._readCentralDirectory();
+    } catch (err) {
+      // 解析失败必须关掉 fd，否则调用方拿不到 reader 实例、也就没人能 close()，
+      // 只能等 GC（Node 会打 "Closing FileHandle object on garbage collection" 警告，
+      // 未来版本会直接抛错）。坏包场景最容易走到这里。
+      await this.close();
+      throw err;
+    }
   }
 
   /** 读文件尾部并定位 EOCD */
@@ -313,17 +335,22 @@ export class ZipReader {
 
   /**
    * 流式解压到文件，避免大文件占用内存。
+   *
    * @param {object} entry
    * @param {string} destPath
    * @param {(n: number) => void} [onProgress] 每写入一块回调（字节数）
+   * @param {{ shouldAbort?: () => boolean }} [opts]
+   *   shouldAbort 返回 true 时立刻中止（删除半成品并抛 aborted）。
+   *   这是「暂停后立即恢复」时防止旧轮次继续写盘/累加计数的手段：
+   *   仅有状态检查不够，因为流的 data 回调在 await 之外同步触发。
    */
-  async extractEntryTo(entry, destPath, onProgress) {
+  async extractEntryTo(entry, destPath, onProgress, opts = {}) {
     if (entry.encrypted) throw new Error('条目已加密，需要 7-Zip 与密码支持');
 
     await fsp.mkdir(path.dirname(destPath), { recursive: true });
 
     if (entry.method === METHOD_STORE) {
-      await this._streamRaw(entry, destPath, onProgress);
+      await this._streamRaw(entry, destPath, onProgress, opts);
       return;
     }
 
@@ -341,16 +368,22 @@ export class ZipReader {
     });
     const inflate = zlib.createInflateRaw();
     const out = fs.createWriteStream(destPath);
-    const hasher = new CrcAccumulator();
+    const hasher = new Crc32Stream();
 
     await new Promise((resolve, reject) => {
-      let written = 0;
       src.on('error', reject);
       inflate.on('error', reject);
       out.on('error', reject);
       inflate.on('data', (chunk) => {
+        if (opts.shouldAbort && opts.shouldAbort()) {
+          // 主动销毁所有流；'close' 会触发下面的清理
+          src.destroy();
+          inflate.destroy();
+          out.destroy();
+          reject(new AbortError());
+          return;
+        }
         hasher.update(chunk);
-        written += chunk.length;
         if (onProgress) onProgress(chunk.length);
       });
       out.on('finish', () => {
@@ -378,7 +411,7 @@ export class ZipReader {
   }
 
   /** 原始数据不走内存：直接按区间拷贝（STORE 方法） */
-  async _streamRaw(entry, destPath, onProgress) {
+  async _streamRaw(entry, destPath, onProgress, opts = {}) {
     const start = await this._dataOffset(entry);
     const src = this.fd.createReadStream({
       start,
@@ -387,11 +420,17 @@ export class ZipReader {
       highWaterMark: 1 << 16
     });
     const out = fs.createWriteStream(destPath);
-    const hasher = new CrcAccumulator();
+    const hasher = new Crc32Stream();
     await new Promise((resolve, reject) => {
       src.on('error', reject);
       out.on('error', reject);
       src.on('data', (chunk) => {
+        if (opts.shouldAbort && opts.shouldAbort()) {
+          src.destroy();
+          out.destroy();
+          reject(new AbortError());
+          return;
+        }
         hasher.update(chunk);
         if (onProgress) onProgress(chunk.length);
       });
@@ -435,19 +474,6 @@ export class ZipReader {
   }
 }
 
-/** 小工具：把 crc32 包成流式累加器 */
-class CrcAccumulator {
-  constructor() {
-    this.value = 0;
-  }
-  update(chunk) {
-    this.value = crc32(chunk, this.value);
-  }
-  digest() {
-    return this.value >>> 0;
-  }
-}
-
 /**
  * ZIP 写入器。
  *
@@ -482,19 +508,20 @@ export class ZipWriter {
    * 添加一个文件。
    * @param {string} srcPath 磁盘上的源文件
    * @param {string} entryName 包内路径（用 / 分隔）
-   * @param {{ mtime?: Date, mode?: number }} [meta]
+   * @param {{ mtime?: Date, mode?: number, shouldAbort?: () => boolean, onProgress?: (n: number) => void }} [meta]
    */
   async addFile(srcPath, entryName, meta = {}) {
     const st = await fsp.stat(srcPath);
     const mtime = meta.mtime || st.mtime || new Date();
     const mode = meta.mode ?? st.mode & 0o7777;
     return this._addFromStream(
-      fs.createReadStream(srcPath),
+      fs.createReadStream(srcPath, { highWaterMark: 1 << 16 }),
       entryName,
       st.size,
       mtime,
       mode,
-      false
+      false,
+      meta
     );
   }
 
@@ -502,17 +529,17 @@ export class ZipWriter {
    * 添加内存中的数据。
    * @param {Buffer} buf
    * @param {string} entryName
-   * @param {{ mtime?: Date, mode?: number }} [meta]
+   * @param {{ mtime?: Date, mode?: number, shouldAbort?: () => boolean, onProgress?: (n: number) => void }} [meta]
    */
   async addBuffer(buf, entryName, meta = {}) {
-    const { Readable } = await import('node:stream');
     return this._addFromStream(
       Readable.from([buf]),
       entryName,
       buf.length,
       meta.mtime || new Date(),
       meta.mode ?? 0o644,
-      false
+      false,
+      meta
     );
   }
 
@@ -525,7 +552,7 @@ export class ZipWriter {
     const name = entryName.endsWith('/') ? entryName : entryName + '/';
     const mtime = meta.mtime || new Date();
     const mode = (meta.mode ?? 0o755) | 0o040000; // 带上 S_IFDIR
-    return this._addFromStream(null, name, 0, mtime, mode, true);
+    return this._addFromStream(null, name, 0, mtime, mode, true, meta);
   }
 
   /**
@@ -534,7 +561,7 @@ export class ZipWriter {
    * 2. 流式压缩写入数据区，同时更新 CRC 与计数
    * 3. 回填本地头
    */
-  async _addFromStream(stream, entryName, declaredSize, mtime, mode, isDir) {
+  async _addFromStream(stream, entryName, declaredSize, mtime, mode, isDir, opts = {}) {
     if (this.closed) throw new Error('ZIP 已关闭');
     // ZIP 规范要求 / 分隔；Windows 传入 \ 时统一
     const nameBuf = Buffer.from(entryName.replace(/\\/g, '/'), 'utf8');
@@ -544,7 +571,7 @@ export class ZipWriter {
     const { dosDate, dosTime } = dateToDos(mtime);
 
     // --- 本地头占位 ---
-    const extraLocal = needZip64 ? this._buildZip64Extra(0, 0, 0, 'local') : Buffer.alloc(0);
+    const extraLocal = needZip64 ? this._buildZip64Extra(0, 0, 0) : Buffer.alloc(0);
     const localHeaderSize = 30 + nameBuf.length + extraLocal.length;
     const localOffset = this.offset;
 
@@ -563,7 +590,6 @@ export class ZipWriter {
     if (extraLocal.length) await this._write(extraLocal);
 
     // --- 数据区 ---
-    const dataStart = this.offset;
     let crc = 0;
     let uncompSize = 0;
     let compSize = 0;
@@ -571,46 +597,38 @@ export class ZipWriter {
     if (isDir || !stream) {
       // 目录条目无数据
     } else if (method === METHOD_STORE) {
-      await new Promise((resolve, reject) => {
-        stream.on('data', async (chunk) => {
-          stream.pause();
-          try {
-            crc = crc32(chunk, crc);
-            uncompSize += chunk.length;
-            await this._write(chunk);
-            compSize += chunk.length;
-            stream.resume();
-          } catch (err) {
-            reject(err);
-          }
-        });
-        stream.on('end', resolve);
-        stream.on('error', reject);
-      });
+      try {
+        for await (const chunk of stream) {
+          if (opts.shouldAbort && opts.shouldAbort()) throw new AbortError();
+          crc = crc32(chunk, crc);
+          uncompSize += chunk.length;
+          await this._write(chunk);
+          compSize += chunk.length;
+          if (opts.onProgress) opts.onProgress(chunk.length);
+        }
+      } finally {
+        stream.destroy?.();
+      }
     } else {
       // DEFLATE：用 zlib 流，边压边写
       const deflate = zlib.createDeflateRaw({ level: this.level });
-      await new Promise((resolve, reject) => {
-        stream.on('error', reject);
-        deflate.on('error', reject);
-        deflate.on('data', async (chunk) => {
-          deflate.pause();
-          try {
-            await this._write(chunk);
-            compSize += chunk.length;
-            deflate.resume();
-          } catch (err) {
-            reject(err);
-          }
-        });
-        deflate.on('end', resolve);
-        // 在 source 上算 CRC/原始大小，避免解压后再算一遍
-        stream.on('data', (chunk) => {
-          crc = crc32(chunk, crc);
-          uncompSize += chunk.length;
-        });
-        stream.pipe(deflate);
+      stream.on('data', (chunk) => {
+        crc = crc32(chunk, crc);
+        uncompSize += chunk.length;
+        if (opts.onProgress) opts.onProgress(chunk.length);
       });
+      stream.on('error', (err) => deflate.destroy(err));
+      stream.pipe(deflate);
+      try {
+        for await (const chunk of deflate) {
+          if (opts.shouldAbort && opts.shouldAbort()) throw new AbortError();
+          await this._write(chunk);
+          compSize += chunk.length;
+        }
+      } finally {
+        stream.destroy?.();
+        deflate.destroy();
+      }
     }
 
     if (!isDir && uncompSize === 0 && declaredSize > 0) {

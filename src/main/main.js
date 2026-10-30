@@ -271,15 +271,8 @@ function registerIpc() {
 
   // ---- 改某个任务的目标目录（未开始时有效）----
   ipcMain.handle('z:set-task-dest', (_e, id, dir) => {
-    const task = engine?.tasks.get(String(id));
-    if (!task) return { ok: false, error: '任务不存在' };
-    if (task.status === 'running') return { ok: false, error: '任务运行中，无法修改目录' };
-    const next = String(dir || '').trim();
-    if (!next) return { ok: false, error: '目录为空' };
-    task.destDir = path.resolve(next);
-    engine._broadcast();
-    engine._saveStateSoon(true);
-    return { ok: true, dir: task.destDir };
+    if (!engine) return { ok: false, error: '引擎未就绪' };
+    return engine.setTaskDest(id, dir);
   });
 
   // ---- 解压 ----

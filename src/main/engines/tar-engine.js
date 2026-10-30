@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { AbortError } from './zip-engine.js';
 
 const BLOCK = 512;
 
@@ -119,9 +120,16 @@ export class TarReader {
 
   async _open(startOffset) {
     this.fd = await fsp.open(this.filePath, 'r');
-    const st = await this.fd.stat();
-    this.size = st.size;
-    await this._scan(startOffset);
+    try {
+      const st = await this.fd.stat();
+      this.size = st.size;
+      await this._scan(startOffset);
+    } catch (err) {
+      // 与 ZipReader 同理：打开后解析失败要自己关 fd，
+      // 否则调用方拿不到实例，fd 只能等 GC 回收
+      await this.close();
+      throw err;
+    }
   }
 
   /** 顺序扫描所有头 */
@@ -251,8 +259,9 @@ export class TarReader {
    * @param {object} entry
    * @param {string} destPath
    * @param {(n: number) => void} [onProgress]
+   * @param {{ shouldAbort?: () => boolean }} [opts]
    */
-  async extractEntryTo(entry, destPath, onProgress) {
+  async extractEntryTo(entry, destPath, onProgress, opts = {}) {
     await fsp.mkdir(path.dirname(destPath), { recursive: true });
     if (entry.size === 0) {
       await fsp.writeFile(destPath, Buffer.alloc(0));
@@ -268,9 +277,20 @@ export class TarReader {
     await new Promise((resolve, reject) => {
       src.on('error', reject);
       out.on('error', reject);
-      if (onProgress) src.on('data', (c) => onProgress(c.length));
+      src.on('data', (c) => {
+        if (opts.shouldAbort && opts.shouldAbort()) {
+          src.destroy();
+          out.destroy();
+          reject(new AbortError());
+          return;
+        }
+        if (onProgress) onProgress(c.length);
+      });
       out.on('finish', resolve);
       src.pipe(out);
+    }).catch(async (err) => {
+      await fsp.rm(destPath, { force: true }).catch(() => {});
+      throw err;
     });
   }
 
@@ -397,7 +417,7 @@ export class TarWriter {
    * 添加文件。
    * @param {string} srcPath
    * @param {string} entryName
-   * @param {{ mtime?: Date, mode?: number }} [meta]
+   * @param {{ mtime?: Date, mode?: number, shouldAbort?: () => boolean }} [meta]
    */
   async addFile(srcPath, entryName, meta = {}) {
     const st = await fsp.stat(srcPath);
@@ -414,19 +434,14 @@ export class TarWriter {
     await this._write(header);
 
     const src = fs.createReadStream(srcPath, { highWaterMark: 1 << 16 });
-    await new Promise((resolve, reject) => {
-      src.on('error', reject);
-      src.on('data', async (chunk) => {
-        src.pause();
-        try {
-          await this._write(chunk);
-          src.resume();
-        } catch (err) {
-          reject(err);
-        }
-      });
-      src.on('end', resolve);
-    });
+    try {
+      for await (const chunk of src) {
+        if (meta.shouldAbort && meta.shouldAbort()) throw new AbortError();
+        await this._write(chunk);
+      }
+    } finally {
+      src.destroy();
+    }
 
     const pad = padTo512(st.size);
     if (pad) await this._write(Buffer.alloc(pad));

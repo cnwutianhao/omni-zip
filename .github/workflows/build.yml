@@ -52,6 +52,10 @@ jobs:
           node scripts/format-test.mjs
           node scripts/external-tool-test.mjs
 
+      # 200 轮混合场景压测：验证并发、暂停恢复、重启、并发保存、路径穿越
+      - name: 稳定性压测（200 轮）
+        run: node scripts/stability-test.mjs 200
+
   # ---------------------------------------------------------------- 打包
   build:
     name: 打包 ${{ matrix.platform }}-${{ matrix.arch }}

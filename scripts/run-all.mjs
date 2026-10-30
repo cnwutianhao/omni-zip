@@ -26,7 +26,9 @@ const suites = [
   ['smoke-test.mjs', []], // 核心库：路径安全 / ZIP / TAR / GZIP / 探测
   ['engine-test.mjs', []], // 任务引擎：解压 / 压缩 / 队列 / 暂停 / 持久化 / 穿越防护
   ['format-test.mjs', []], // 格式兼容性：边界情况 + 与系统 bsdtar 互操作
-  ['external-tool-test.mjs', []] // 外部工具适配：参数拼接 / 进度解析 / 退出码
+  ['external-tool-test.mjs', []], // 外部工具适配：参数拼接 / 进度解析 / 退出码
+  // 压测：默认 200 轮，--quick 时降到 40 轮（本地快速验证用）
+  ['stability-test.mjs', [process.argv.includes('--quick') ? '40' : '200']]
 ];
 
 let allOk = true;

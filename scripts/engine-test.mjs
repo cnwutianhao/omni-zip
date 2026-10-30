@@ -111,14 +111,30 @@ check(
   fs.readFileSync(path.join(destRound, 'src/sub/nested.txt'), 'utf8') === 'nested content '.repeat(500)
 );
 
-// ───────────────────────────── ⑤ 压缩 TAR.GZ
-console.log('━━━ ⑤ 压缩 TAR.GZ ━━━');
+// ───────────────────────────── ⑤ 压缩 TAR.GZ 与往返解压
+console.log('━━━ ⑤ 压缩 TAR.GZ 与往返解压 ━━━');
 const outTgz = path.join(TMP, 'created.tar.gz');
 const idTgz = await engine.addCreate([srcDir], { archivePath: outTgz, formatId: 'gzip' });
 const stTgz = await waitStatus(engine, idTgz, 'done');
 check('TAR.GZ 创建完成', stTgz === 'done', engine.tasks.get(idTgz)?.error || '');
 check('tar.gz 输出存在', fs.existsSync(outTgz));
 check('tar.gz 有 gzip 头', fs.readFileSync(outTgz)[0] === 0x1f && fs.readFileSync(outTgz)[1] === 0x8b);
+
+// 解压刚生成的 tar.gz，验证两层归档完整解开且不残留中间 .tar
+const destTgz = path.join(TMP, 'out-tgz');
+const idTgzE = await engine.addExtract(outTgz, { destDir: destTgz });
+const stTgzE = await waitStatus(engine, idTgzE, 'done');
+check('TAR.GZ 解压完成', stTgzE === 'done', engine.tasks.get(idTgzE)?.error || '');
+check(
+  'TAR.GZ 还原内层文件',
+  fs.existsSync(path.join(destTgz, 'src/readme.txt')) &&
+    fs.readFileSync(path.join(destTgz, 'src/readme.txt'), 'utf8') === 'omnizip test file'
+);
+check(
+  'TAR.GZ 还原嵌套文件',
+  fs.readFileSync(path.join(destTgz, 'src/sub/nested.txt'), 'utf8') === 'nested content '.repeat(500)
+);
+check('TAR.GZ 不残留中间 .tar 文件', !fs.existsSync(path.join(destTgz, 'created.tar')));
 
 // ───────────────────────────── ⑥ 单文件 GZIP
 console.log('━━━ ⑥ 单文件 GZIP ━━━');
@@ -143,6 +159,12 @@ check('ZIP 列表条目数', listZipInfo.entries.length === 4, String(listZipInf
 check('ZIP 列表有大小', listZipInfo.entries.some((e) => e.size === 50000));
 const listTarInfo = await engine.listArchive(tarPath);
 check('TAR 列表条目数', listTarInfo.entries.length === 2, String(listTarInfo.entries.length));
+const listTgzInfo = await engine.listArchive(outTgz);
+check(
+  'TAR.GZ 列表识别内层 TAR 条目',
+  listTgzInfo.formatName === 'TAR.GZ' && listTgzInfo.entries.some((e) => e.name.endsWith('readme.txt')),
+  `${listTgzInfo.formatName}: ${listTgzInfo.entries.length} 项`
+);
 
 // ───────────────────────────── ⑧ 路径穿越防护
 console.log('━━━ ⑧ 路径穿越防护 ━━━');
@@ -178,8 +200,8 @@ for (let i = 0; i < 6; i++) {
 const doneAll = await Promise.all(ids.map((id) => waitStatus(engine, id, ['done', 'error'], 40000)));
 check('6 个任务全部完成', doneAll.every((s) => s === 'done'), doneAll.join(','));
 
-// ───────────────────────────── ⑩ 暂停 / 继续
-console.log('━━━ ⑩ 暂停 / 继续 ━━━');
+// ───────────────────────────── ⑩ 暂停 / 继续 与 setTaskDest
+console.log('━━━ ⑩ 暂停 / 继续 与 setTaskDest ━━━');
 const idPause = await engine.addExtract(zipPath, { destDir: path.join(TMP, 'pause-test') });
 // 立刻暂停（可能还没开始跑）
 await sleep(5);
@@ -187,6 +209,9 @@ const paused = engine.pause(idPause);
 check('暂停请求成功或被忽略（已开始）', paused === true || paused === false, String(paused));
 const stAfterPause = engine.tasks.get(idPause)?.status;
 if (stAfterPause === 'paused') {
+  const newDest = path.join(TMP, 'pause-test-renamed');
+  const setRes = engine.setTaskDest(idPause, newDest);
+  check('paused 状态下 setTaskDest 成功', setRes.ok === true && setRes.dir === newDest, setRes.dir);
   const resumed = engine.resume(idPause);
   check('恢复请求成功', resumed === true);
   const stResumed = await waitStatus(engine, idPause, ['done', 'error'], 20000);
@@ -194,7 +219,10 @@ if (stAfterPause === 'paused') {
 } else {
   const st2 = await waitStatus(engine, idPause, ['done', 'error'], 20000);
   check('任务已完成后无需恢复', st2 === 'done', st2);
+  const setRes = engine.setTaskDest(idPause, path.join(TMP, 'done-renamed'));
+  check('非 running 状态下 setTaskDest 成功', setRes.ok === true);
 }
+check('setTaskDest 拒绝不存在的任务', engine.setTaskDest('no-such-id', '/tmp/x').ok === false);
 
 // ───────────────────────────── ⑪ 持久化与重启
 console.log('━━━ ⑪ 持久化与重启 ━━━');
