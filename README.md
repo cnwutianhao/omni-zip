@@ -55,8 +55,9 @@ npm start
 | `engine-test.mjs` | 任务引擎：解压 / 压缩 / 列表 / 穿越防护 / 队列 / 暂停 / 持久化 / 删除 | 41 |
 | `format-test.mjs` | 格式注册表 / 复合扩展名 / 边界情况 / **与系统 bsdtar 双向互操作** / 坏包容错 | 48 |
 | `external-tool-test.mjs` | 外部工具适配：参数拼接 / 进度解析 / 退出码语义 / 列表解析 | 42 |
+| `stability-test.mjs` | **200 轮混合压测**：并发 / 暂停恢复 / 重启 / 并发保存 / 穿越 / 资源泄漏 | 200 轮 |
 | `ui-test.mjs` | UI 自动化：首屏 / 任务渲染 / 弹窗 / 筛选 / 拖放区（需调试端口） | 41 |
-| `run-all.mjs` | 依次跑全部（自动拉起应用跑 UI 测试） | 204 |
+| `run-all.mjs` | 依次跑全部（自动拉起应用跑 UI 测试） | — |
 
 工具脚本（不参与回归）：
 
@@ -69,7 +70,8 @@ npm start
 改引擎代码后至少跑：
 
 ```bash
-node scripts/smoke-test.mjs && node scripts/engine-test.mjs && node scripts/format-test.mjs
+node scripts/smoke-test.mjs && node scripts/engine-test.mjs && \
+node scripts/format-test.mjs && node scripts/stability-test.mjs 200
 ```
 
 跑全部（含 UI）：
@@ -78,6 +80,8 @@ node scripts/smoke-test.mjs && node scripts/engine-test.mjs && node scripts/form
 node scripts/run-all.mjs
 # 或只跑非 UI 部分
 node scripts/run-all.mjs --skip-ui
+# 快速验证（压测降到 40 轮）
+node scripts/run-all.mjs --quick
 ```
 
 手动跑 UI 测试（需要先启动应用）：
