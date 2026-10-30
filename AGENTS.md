@@ -81,25 +81,55 @@ if (!abs) continue;
 - `_schedule()` 里并发名额**同步预留**（`_started = true`），否则批量添加会突破 `MAX_ACTIVE`
 - `_promoteQueue()` 只提升 `queued`，绝不自动拉起 `paused`（那是用户显式暂停）
 
-### 4. 持久化必须原子 + 互斥
+### 4. 持久化必须原子 + 串行
 
 ```js
-if (this._saving) { this._dirty = true; return; }  // 并发写直接返回
-await fsp.writeFile(tmp, data);                    // 先写 .tmp
-await fsp.rename(tmp, this.stateFile);             // 再 rename
-finally { this._saving = false; if (this._dirty) this._saveStateSoon(); }
+async _saveState() {
+  // 串行排队，不能"有保存就 return"
+  const prev = this._saveChain || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => this._writeStateFile());
+  this._saveChain = next;
+  return next;
+}
 ```
 
-- 解压任务**不能续传**，所以重启后 `running` 一律降级为 `paused`，resume 是"从头重跑"
-- 新建压缩包先写 `.omnizip-part`，成功后 rename —— 中途失败绝不留下"看起来完好"的坏包
+三条铁律，都是压测（2000 轮）逼出来的：
 
-### 5. 格式注册表
+1. **tmp 文件名每次唯一**（`${stateFile}.${pid}.${seq}.tmp`）。
+   固定成 `${stateFile}.tmp` 会让两个实例互相截断，产生非法 JSON。
+2. **后来的保存要等前一个完成**，不能直接 return。
+   `stop()` 里 `await _saveState()` 是在要「返回时磁盘已最新」，
+   直接 return 会让它误判，重启后任务数对不上。
+3. **保留 `.bak`**，`_loadState` 遇到损坏时留档 `.corrupt-<时间戳>` 并从 `.bak` 恢复，
+   不要静默返回空数组（那等于丢光用户任务）。
+
+### 5. 解压/压缩的计数器必须"每轮独立"
+
+```js
+const counter = { items: 0, bytes: 0 };   // 本轮自己的
+...
+counter.items++;
+if (task._run !== run) throw new AbortError();  // 写回前再验一次
+task.itemsDone = counter.items;
+```
+
+**绝不能** `task.itemsDone++`。原因：pause 后立刻 resume 会开新一轮并清零计数，
+而旧一轮可能正处在 await 之后、准备自增的位置，它会把新一轮刚清零的值再 +1，
+最终 `itemsDone(4) > itemsTotal(3)`（压测稳定复现）。
+
+### 6. 中止用 AbortError，不要字符串匹配
+
+`throw new AbortError()`（定义在 `zip-engine.js`）而非 `throw new Error('aborted')`。
+暂停/删除时 `_run` 会静默退出，**不该**记进 `task.error`、也不该弹失败提示。
+用独立错误类型才能可靠区分「用户暂停」与「真出错」。
+
+### 7. 格式注册表
 
 - 所有格式在 `lib/register-formats.js` 里**显式**注册（不用模块自注册，顺序不可控）
 - 探测规则：**签名优先，扩展名兜底**（`detectFormat`）
 - 新增格式：在注册表加一条描述符 + （若要内置支持）在 `archive-engine.js` 加一个 `_extractXxx`
 
-### 6. IPC 与渲染层
+### 8. IPC 与渲染层
 
 - `t:`/`z:` 前缀区分项目（本项目用 `z:`）
 - 新增 IPC **必须同时改三处**：`main.js` 的 `registerIpc()`、`preload.cjs` 的白名单、`renderer.js` 的调用
@@ -107,7 +137,7 @@ finally { this._saving = false; if (this._dirty) this._saveStateSoon(); }
 - **所有来自压缩包/用户的文本一律 `textContent`**，不拼 `innerHTML`（CSP 也禁了内联脚本）
 - 列表用"节点池 + 就地更新"（`nodes` Map），不要每次 `innerHTML = ''` 重建
 
-### 7. 平台兼容
+### 9. 平台兼容
 
 - 窗口配置按 `process.platform` 分支（mac: hiddenInset 红绿灯；win/linux: 原生标题栏）
 - CSS 用 `html[data-platform]` 区分标题栏留白
